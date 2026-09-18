@@ -946,6 +946,69 @@ Example:
 
     override_backends = {"db": "custom_module.backend.class"}
 
+Dead letter settings
+--------------------
+
+.. setting:: dead_letter_enabled
+
+``dead_letter_enabled``
+~~~~~~~~~~~~~~~~~~~~~~~
+
+Default: ``False``.
+
+Persist task messages that fail after all retries, or that are rejected
+without requeue. Stored records include the exception, traceback, task
+arguments, original serialized message, headers, and delivery information.
+
+.. setting:: dead_letter_store
+
+``dead_letter_store``
+~~~~~~~~~~~~~~~~~~~~~
+
+Default: ``celery.dead_letters.sqlite:SqliteDeadLetterStore``.
+
+Qualified name of the class used to store dead letters.
+
+.. setting:: dead_letter_url
+
+``dead_letter_url``
+~~~~~~~~~~~~~~~~~~~
+
+Default: ``celery-dead-letters.sqlite3``.
+
+Location passed to the configured dead-letter store. The default SQLite
+store accepts a filesystem path, ``sqlite:///path``, or
+``sqlite://:memory:``. When workers run on multiple machines, place this
+database on shared storage, or configure a replicated
+:setting:`dead_letter_store`.
+
+.. setting:: dead_letter_include_rejected
+
+``dead_letter_include_rejected``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Default: ``True``.
+
+Archive tasks rejected with ``Reject(requeue=False)`` in addition to tasks
+that raise an ordinary exception.
+
+.. setting:: dead_letter_lease_seconds
+
+``dead_letter_lease_seconds``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Default: ``300``.
+
+Time a selected replay remains reserved for publishing. The same task cannot
+be claimed by another replay batch until the lease expires.
+
+Use ``celery dead-letter list`` to inspect records and
+``celery dead-letter replay`` to claim and republish selected records.
+Only ``FAILURE`` records can be claimed, and replay skips task IDs already
+in the ``SUCCESS`` result state; successful replay execution marks the stored
+record as ``SUCCESS``. The replay message is also tagged, allowing workers to
+skip it if the same ID completed successfully before execution began.
+
 .. _conf-database-result-backend:
 
 Database backend settings

@@ -291,6 +291,21 @@ def traceback_clear(exc=None):
         tb = tb.tb_next
 
 
+def _dead_letter_already_succeeded(app, task_id):
+    if not app.conf.dead_letter_enabled:
+        return False
+    try:
+        from celery.dead_letters.replay import get_store
+        store = get_store(app)
+        if store is None:
+            return False
+        dead_letter = store.get(task_id)
+        return dead_letter is not None and dead_letter.status == states.SUCCESS
+    except Exception:
+        logger.exception('Could not check dead-letter state for task %s', task_id)
+        return False
+
+
 def build_tracer(name, task, loader=None, hostname=None, store_errors=True,
                  Info=TraceInfo, eager=False, propagate=False, app=None,
                  monotonic=time.monotonic, trace_ok_t=trace_ok_t,
@@ -410,6 +425,7 @@ def build_tracer(name, task, loader=None, hostname=None, store_errors=True,
 
             redelivered = (task_request.delivery_info
                            and task_request.delivery_info.get('redelivered', False))
+            replay_dead_letter = getattr(task_request, 'dead_letter_replay', False)
             if deduplicate_successful_tasks and redelivered:
                 if task_request.id in successful_requests:
                     return trace_ok_t(R, I, T, Rstr)
@@ -427,6 +443,16 @@ def build_tracer(name, task, loader=None, hostname=None, store_errors=True,
                             'description': 'Task already completed successfully.'
                         })
                         return trace_ok_t(R, I, T, Rstr)
+            elif replay_dead_letter and (
+                task_request.id in successful_requests
+                or _dead_letter_already_succeeded(app, task_request.id)
+            ):
+                info(LOG_IGNORED, {
+                    'id': task_request.id,
+                    'name': get_task_name(task_request, name),
+                    'description': 'Task already completed successfully.'
+                })
+                return trace_ok_t(R, I, T, Rstr)
 
             push_task(task)
             root_id = task_request.root_id or uuid

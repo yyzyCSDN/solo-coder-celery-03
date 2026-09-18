@@ -252,6 +252,13 @@ NAMESPACES = Namespace(
         table_names=Option(type='dict', old={'celery_result_db_tablenames'}),
         create_tables_at_setup=Option(True, type='bool'),
     ),
+    dead_letter=Namespace(
+        enabled=Option(False, type='bool'),
+        store=Option('celery.dead_letters.sqlite:SqliteDeadLetterStore', type='string'),
+        url=Option('celery-dead-letters.sqlite3', type='string'),
+        include_rejected=Option(True, type='bool'),
+        lease_seconds=Option(300, type='int'),
+    ),
     task=Namespace(
         __old__=OLD_NS,
         acks_late=Option(False, type='bool'),

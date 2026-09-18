@@ -18,6 +18,7 @@ from celery import current_app, signals
 from celery.app.task import Context
 from celery.app.trace import fast_trace_task, trace_task, trace_task_ret
 from celery.concurrency.base import BasePool
+from celery.dead_letters.replay import archive_request, get_store
 from celery.exceptions import (Ignore, InvalidTaskError, Reject, Retry, TaskRevokedError, Terminated,
                                TimeLimitExceeded, WorkerLostError)
 from celery.platforms import signals as _signals
@@ -534,6 +535,8 @@ class Request:
                 store_result=self.store_errors,
             )
 
+            self._archive_terminal_exception(exc)
+
             if self.task.acks_late and self.task.acks_on_failure_or_timeout:
                 self.acknowledge()
 
@@ -548,6 +551,7 @@ class Request:
                 raise exc
             return self.on_failure(retval, return_ok=True)
         task_ready(self, successful=True)
+        self._mark_dead_letter_succeeded()
 
         if self.task.acks_late:
             self.acknowledge()
@@ -591,6 +595,8 @@ class Request:
         elif isinstance(exc, MemoryError):
             raise MemoryError(f'Process got: {exc}')
         elif isinstance(exc, Reject):
+            if not exc.requeue and self._app.conf.dead_letter_include_rejected:
+                self._archive_dead_letter(exc_info)
             return self.reject(requeue=exc.requeue)
         elif isinstance(exc, Ignore):
             return self.acknowledge()
@@ -600,6 +606,7 @@ class Request:
         # (acks_late) acknowledge after result stored.
         requeue = False
         is_worker_lost = isinstance(exc, WorkerLostError)
+        archived_terminal_failure = False
         if self.task.acks_late:
             reject = (
                 (self.task.reject_on_worker_lost and is_worker_lost)
@@ -611,11 +618,18 @@ class Request:
                 self.reject(requeue=requeue)
                 send_failed_event = False
             elif ack:
+                if not is_worker_lost:
+                    archived_terminal_failure = self._archive_dead_letter(exc_info)
                 self.acknowledge()
             else:
                 # supporting the behaviour where a task failed and
                 # need to be removed from prefetched local queue
+                if not is_worker_lost:
+                    archived_terminal_failure = self._archive_dead_letter(exc_info)
                 self.reject(requeue=False)
+
+        if not archived_terminal_failure and not self.task.acks_late and not is_worker_lost:
+            self._archive_dead_letter(exc_info)
 
         # This is a special case where the process would not have had time
         # to write the result.
@@ -642,6 +656,44 @@ class Request:
         if not return_ok:
             error('Task handler raised error: %r', exc,
                   exc_info=exc_info.exc_info)
+
+    def _archive_terminal_exception(self, exc):
+        class TimeoutFailureInfo:
+            traceback = ''
+
+        return self._archive_dead_letter(TimeoutFailureInfo(), exc)
+
+    def _mark_dead_letter_succeeded(self):
+        if not self.request_dict.get('dead_letter_replay'):
+            return
+        if not self._app.conf.dead_letter_enabled:
+            return
+        store = get_store(self._app)
+        if store is not None:
+            try:
+                store.mark_succeeded(self.id)
+            except Exception:
+                logger.exception('Could not mark dead letter task %s as succeeded', self.id)
+
+    def _archive_dead_letter(self, exc_info, exc=None):
+        if not self._app.conf.dead_letter_enabled:
+            return False
+        store = get_store(self._app)
+        if store is None:
+            return False
+        exc = exc or exc_info.exception
+        try:
+            return archive_request(
+                self,
+                exc,
+                exc_info.traceback,
+                store=store,
+            )
+        except Exception:
+            if self.task.acks_late:
+                raise
+            logger.exception('Could not store dead letter for task %s', self.id)
+            return False
 
     def acknowledge(self):
         """Acknowledge task."""
@@ -778,6 +830,7 @@ def create_request_cls(base, task, pool, hostname, eventer,
                     raise exc
                 return self.on_failure(retval, return_ok=True)
             task_ready(self, successful=True)
+            self._mark_dead_letter_succeeded()
 
             if acks_late:
                 self.acknowledge()
