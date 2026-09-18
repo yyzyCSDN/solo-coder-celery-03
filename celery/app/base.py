@@ -277,6 +277,7 @@ class Celery:
     control_cls = 'celery.app.control:Control'
     task_cls = 'celery.app.task:Task'
     registry_cls = 'celery.app.registry:TaskRegistry'
+    dead_letter_cls = 'celery.worker.deadletter:DeadLetterStore'
 
     #: Thread local storage.
     _local = None
@@ -1450,6 +1451,19 @@ class Celery:
     def control(self):
         """Remote control: :class:`~@control`."""
         return instantiate(self.control_cls, app=self)
+
+    @cached_property
+    def dead_letters(self):
+        """Dead-letter store with tasks that failed permanently.
+
+        Tasks that exhausted all of their retries, or whose message was
+        rejected without requeue, are collected here together with the
+        failure reason, the task arguments and the original message,
+        so that they can be inspected and replayed later.
+
+        See :class:`celery.worker.deadletter.DeadLetterStore`.
+        """
+        return instantiate(self.dead_letter_cls, app=self)
 
     @cached_property
     def events(self):

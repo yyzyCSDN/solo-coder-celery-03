@@ -315,6 +315,8 @@ NAMESPACES = Namespace(
         enable_soft_shutdown_on_idle=Option(False, type='bool'),
         concurrency=Option(None, type='int'),
         consumer=Option('celery.worker.consumer:Consumer', type='string'),
+        dead_letter_db=Option(type='string'),
+        dead_letter_max_entries=Option(1000, type='int'),
         direct=Option(False, type='bool', old={'celery_worker_direct'}),
         disable_rate_limits=Option(
             False, type='bool', old={'celery_disable_rate_limits'},

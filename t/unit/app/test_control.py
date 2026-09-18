@@ -159,6 +159,29 @@ class test_inspect:
         self.inspect.revoked()
         self.assert_broadcast_called('revoked')
 
+    def test_dead_letters(self):
+        self.inspect.dead_letters()
+        command, = self.app.control.broadcast.call_args[0]
+        assert command == 'dead_letters'
+        assert self.app.control.broadcast.call_args[1]['arguments'] == {
+            'task': None, 'exc_type': None, 'reason': None,
+            'since': None, 'until': None, 'include_requeued': False,
+            'limit': None, 'offset': 0, 'full': False,
+        }
+
+    def test_dead_letters__with_filters(self):
+        self.inspect.dead_letters(
+            task='tasks.add', exc_type='KeyError', reason='failed',
+            since=1.0, until=2.0, include_requeued=True,
+            limit=10, offset=5, full=True)
+        command, = self.app.control.broadcast.call_args[0]
+        assert command == 'dead_letters'
+        assert self.app.control.broadcast.call_args[1]['arguments'] == {
+            'task': 'tasks.add', 'exc_type': 'KeyError', 'reason': 'failed',
+            'since': 1.0, 'until': 2.0, 'include_requeued': True,
+            'limit': 10, 'offset': 5, 'full': True,
+        }
+
     def test_registered(self):
         self.inspect.registered()
         self.assert_broadcast_called('registered', taskinfoitems=())
@@ -432,6 +455,62 @@ class test_Control:
             headers={'foo': 'bar'},
             signal=control.TERM_SIGNAME,
             terminate=False,
+        )
+
+    def test_dead_letter_replay(self):
+        self.app.control.dead_letter_replay(task='tasks.add')
+        self.assert_control_called_with_args(
+            'dead_letter_replay',
+            destination=None,
+            ids=None,
+            task='tasks.add',
+            exc_type=None,
+            since=None,
+            until=None,
+            limit=None,
+            force=False,
+        )
+
+    def test_dead_letter_replay__with_options(self):
+        self.app.control.dead_letter_replay(
+            ids=['id1', 'id2'], force=True, limit=10, destination='a@q.com')
+        self.assert_control_called_with_args(
+            'dead_letter_replay',
+            destination='a@q.com',
+            ids=['id1', 'id2'],
+            task=None,
+            exc_type=None,
+            since=None,
+            until=None,
+            limit=10,
+            force=True,
+        )
+
+    def test_dead_letter_purge(self):
+        self.app.control.dead_letter_purge()
+        self.assert_control_called_with_args(
+            'dead_letter_purge',
+            destination=None,
+            ids=None,
+            task=None,
+            exc_type=None,
+            since=None,
+            until=None,
+            requeued_only=False,
+        )
+
+    def test_dead_letter_purge__with_options(self):
+        self.app.control.dead_letter_purge(
+            task='tasks.add', requeued_only=True, destination='a@q.com')
+        self.assert_control_called_with_args(
+            'dead_letter_purge',
+            destination='a@q.com',
+            ids=None,
+            task='tasks.add',
+            exc_type=None,
+            since=None,
+            until=None,
+            requeued_only=True,
         )
 
     def test_revoke__with_options(self):

@@ -253,6 +253,39 @@ class Inspect:
         """
         return self._request('revoked')
 
+    def dead_letters(self, task=None, exc_type=None, reason=None,
+                     since=None, until=None, include_requeued=False,
+                     limit=None, offset=0, full=False):
+        """Return dead letters (finally failed tasks) collected by workers.
+
+        >>> app.control.inspect().dead_letters(task='myapp.tasks.add')
+        {'celery@node1': [{'id': '...', 'task_id': '...', 'reason': 'failed',
+                           'exc_type': 'MaxRetriesExceededError', ...}]}
+
+        Arguments:
+            task (str): Only include entries of this task name.
+            exc_type (str): Only include entries with this exception type.
+            reason (str): Only include entries with this failure reason
+                (``failed``, ``rejected`` or ``timeout``).
+            since (float): Only include entries that failed at/after
+                this time.
+            until (float): Only include entries that failed at/before
+                this time.
+            include_requeued (bool): Also include entries already
+                requeued by a previous replay.
+            limit (int): Maximum number of entries to return.
+            offset (int): Number of matching entries to skip.
+            full (bool): Also return the original message body and the
+                traceback of every entry.
+
+        Returns:
+            Dict: Dictionary ``{HOSTNAME: [DEAD_LETTER_ENTRY, ...]}``.
+        """
+        return self._request(
+            'dead_letters', task=task, exc_type=exc_type, reason=reason,
+            since=since, until=until, include_requeued=include_requeued,
+            limit=limit, offset=offset, full=full)
+
     def registered(self, *taskinfoitems):
         """Return all registered tasks per worker.
 
@@ -546,6 +579,76 @@ class Control:
         return self.revoke(
             task_id,
             destination=destination, terminate=True, signal=signal, **kwargs)
+
+    def dead_letter_replay(self, ids=None, task=None, exc_type=None,
+                           since=None, until=None, limit=None, force=False,
+                           destination=None, **kwargs):
+        """Tell all (or specific) workers to re-enqueue dead-lettered tasks.
+
+        Dead letters are tasks that failed permanently (retries exhausted
+        or message rejected without requeue), collected by the worker
+        dead-letter store.  The original message of every selected entry
+        is republished with its original task id.
+
+        Tasks already in state ``SUCCESS`` in the result backend are never
+        re-enqueued, and entries already requeued by a previous replay are
+        skipped (unless *force* is enabled), so replaying the same
+        selection twice will not enqueue the same batch of messages again.
+
+        Arguments:
+            ids (Union(str, list)): Only replay the entries with these ids.
+            task (str): Only replay entries of this task name.
+            exc_type (str): Only replay entries with this exception type.
+            since (float): Only replay entries that failed at/after
+                this time.
+            until (float): Only replay entries that failed at/before
+                this time.
+            limit (int): Maximum number of entries to replay.
+            force (bool): Also replay entries already requeued before.
+
+        See Also:
+            :meth:`broadcast` for supported keyword arguments.
+        """
+        return self.broadcast('dead_letter_replay', destination=destination,
+                              arguments={
+                                  'ids': ids,
+                                  'task': task,
+                                  'exc_type': exc_type,
+                                  'since': since,
+                                  'until': until,
+                                  'limit': limit,
+                                  'force': force,
+                              }, **kwargs)
+
+    def dead_letter_purge(self, ids=None, task=None, exc_type=None,
+                          since=None, until=None, requeued_only=False,
+                          destination=None, **kwargs):
+        """Tell all (or specific) workers to remove dead-letter entries.
+
+        With no filter arguments at all, every dead letter is removed.
+
+        Arguments:
+            ids (Union(str, list)): Only remove the entries with these ids.
+            task (str): Only remove entries of this task name.
+            exc_type (str): Only remove entries with this exception type.
+            since (float): Only remove entries that failed at/after
+                this time.
+            until (float): Only remove entries that failed at/before
+                this time.
+            requeued_only (bool): Only remove entries already replayed.
+
+        See Also:
+            :meth:`broadcast` for supported keyword arguments.
+        """
+        return self.broadcast('dead_letter_purge', destination=destination,
+                              arguments={
+                                  'ids': ids,
+                                  'task': task,
+                                  'exc_type': exc_type,
+                                  'since': since,
+                                  'until': until,
+                                  'requeued_only': requeued_only,
+                              }, **kwargs)
 
     def ping(self, destination=None, timeout=1.0, **kwargs):
         """Ping all (or specific) workers.

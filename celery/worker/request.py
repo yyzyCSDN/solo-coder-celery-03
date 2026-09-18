@@ -26,6 +26,7 @@ from celery.utils.log import get_logger
 from celery.utils.nodenames import gethostname
 from celery.utils.serialization import get_pickled_exception
 from celery.utils.time import maybe_iso8601, maybe_make_aware, timezone
+from celery.worker.deadletter import REASON_FAILURE, REASON_REJECTED
 
 from . import state
 
@@ -591,6 +592,8 @@ class Request:
         elif isinstance(exc, MemoryError):
             raise MemoryError(f'Process got: {exc}')
         elif isinstance(exc, Reject):
+            if not exc.requeue:
+                self._dead_letter(exc, REASON_REJECTED, exc_info.traceback)
             return self.reject(requeue=exc.requeue)
         elif isinstance(exc, Ignore):
             return self.acknowledge()
@@ -632,6 +635,11 @@ class Request:
                                       traceback=exc_info.traceback,
                                       einfo=exc_info)
 
+        if not requeue:
+            # the message is gone and the task will not be retried:
+            # keep it in the dead-letter store so it can be replayed.
+            self._dead_letter(exc, REASON_FAILURE, exc_info.traceback)
+
         if send_failed_event:
             self.send_event(
                 'task-failed',
@@ -654,6 +662,19 @@ class Request:
             self._on_reject(logger, self._connection_errors, requeue)
             self.acknowledged = True
             self.send_event('task-rejected', requeue=requeue)
+
+    def _dead_letter(self, exc, reason, traceback=None):
+        """Store a finally failed task in the dead-letter store.
+
+        This is best effort only: a broken store must never affect
+        task processing.
+        """
+        try:
+            self.app.dead_letters.add_from_request(
+                self, exc, reason, traceback=traceback)
+        except Exception as store_exc:  # pylint: disable=broad-except
+            error('Could not store dead letter for %s[%s]: %r',
+                  self.name, self.id, store_exc)
 
     def info(self, safe=False):
         return {

@@ -3240,6 +3240,37 @@ may be appended to the file name (depending on Python version).
 
 Can also be set via the :option:`celery worker --statedb` argument.
 
+.. setting:: worker_dead_letter_max_entries
+
+``worker_dead_letter_max_entries``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Default: 1000.
+
+The maximum number of dead letters kept by the worker.
+
+A dead letter is a task that failed permanently: it exhausted all of
+its retries, or its message was rejected without requeue.  Dead letters
+are collected together with the failure reason, the task arguments and
+the original message, so that they can be inspected and replayed later
+(see the ``dead_letters``, ``dead_letter_replay`` and
+``dead_letter_purge`` remote control commands).
+
+When the limit is exceeded the oldest entries are evicted first.
+Set to 0 to disable dead-letter collection.
+
+.. setting:: worker_dead_letter_db
+
+``worker_dead_letter_db``
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Default: :const:`None` (dead letters are kept in memory only).
+
+Name of the file used to persist the dead-letter store, so that
+collected entries survive worker restarts and can be inspected or
+replayed from any process with access to the file
+(e.g. via ``app.dead_letters``).
+
 .. setting:: worker_timer_precision
 
 ``worker_timer_precision``

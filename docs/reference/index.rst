@@ -59,6 +59,7 @@
     celery.worker.request
     celery.worker.state
     celery.worker.strategy
+    celery.worker.deadletter
     celery.worker.consumer
     celery.worker.consumer.agent
     celery.worker.consumer.connection

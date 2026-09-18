@@ -678,6 +678,103 @@ and all of the tasks that have a stamped header ``header_B`` with values ``value
 
     $ celery -A proj control revoke_by_stamped_headers stamped_header_key_A=stamped_header_value_1 stamped_header_key_B=stamped_header_value_2 --terminate --signal=SIGKILL
 
+.. _worker-dead-letters:
+
+Dead Letters
+============
+
+.. versionadded:: 5.6
+
+:pool support: all
+:broker support: *amqp, redis*
+
+When a task fails permanently -- it exhausted all of its retries, or its
+message was rejected without requeue -- the worker collects a *dead letter*
+for it.  A dead letter keeps the failure reason, the task arguments and the
+original message (body, headers, properties and delivery information), so
+that finally failed tasks are no longer lost in the logs: they can be
+inspected later and selectively re-enqueued.
+
+Dead letters are kept in memory, bounded by
+:setting:`worker_dead_letter_max_entries` (the oldest entries are evicted
+first; set it to 0 to disable collection).  Set
+:setting:`worker_dead_letter_db` to a file path to persist the store, so
+that entries survive worker restarts and can be inspected from any process
+with access to the file:
+
+.. code-block:: pycon
+
+    >>> app.dead_letters.find(task='myapp.tasks.add')
+    [{'id': 'entry-uuid', 'task_id': '...', 'task_name': 'myapp.tasks.add',
+      'reason': 'failed', 'exc_type': 'MaxRetriesExceededError', ...}]
+
+.. control:: dead_letters
+
+``dead_letters``: Listing dead letters
+--------------------------------------
+:command: :program:`celery -A proj inspect dead_letters`
+
+Lists the dead letters collected by the worker, newest first.  Entries
+that were already requeued by a previous replay are hidden unless
+``include_requeued`` is enabled.
+
+The list can be filtered by ``task`` (task name), ``exc_type`` (exception
+class name), ``reason`` (``failed``, ``rejected`` or ``timeout``),
+``since``/``until`` (failure time window), and paginated with
+``limit``/``offset``.  By default the original message body and the
+traceback are omitted from the reply; pass ``full=True`` to include them.
+
+.. code-block:: pycon
+
+    >>> app.control.inspect().dead_letters(task='myapp.tasks.add',
+    ...                                    exc_type='MaxRetriesExceededError')
+
+.. control:: dead_letter_replay
+
+``dead_letter_replay``: Re-enqueueing dead letters
+--------------------------------------------------
+:command: :program:`celery -A proj control dead_letter_replay`
+
+Re-enqueues dead letters selected by entry ``ids`` or by the same filter
+arguments as :control:`dead_letters`.  The original message of every
+selected entry is republished with its original task id, exchange and
+routing key, and a fresh retry budget.
+
+Replay is safe against duplicates:
+
+- a task whose state in the result backend is ``SUCCESS`` is never
+  re-enqueued;
+- if several entries exist for the same task id, only the most recently
+  failed one is re-enqueued;
+- entries already requeued by a previous replay are skipped, so replaying
+  the same selection twice will not enqueue the same batch again
+  (pass ``force=True`` to override).
+
+The reply summarizes the outcome, e.g.::
+
+    {'replay_id': '...',
+     'replayed': [{'id': '...', 'task_id': '...', 'task_name': '...'}],
+     'skipped': {'duplicate': [], 'requeued': [], 'succeeded': [],
+                 'incomplete': [], 'error': [], 'unknown': []},
+     'total': 1}
+
+.. code-block:: pycon
+
+    >>> app.control.broadcast('dead_letter_replay',
+    ...                       arguments={'task': 'myapp.tasks.add'},
+    ...                       reply=True)
+
+.. control:: dead_letter_purge
+
+``dead_letter_purge``: Removing dead letters
+--------------------------------------------
+:command: :program:`celery -A proj control dead_letter_purge`
+
+Removes dead letters matching the given filters (``ids``, ``task``,
+``exc_type``, ``since``, ``until``, or ``requeued_only`` to only remove
+entries that were already replayed).  Without arguments, every dead letter
+is removed.
+
 .. _worker-time-limits:
 
 Time Limits

@@ -815,3 +815,148 @@ class test_ControlPanel:
             assert ret[req1.id][0] == 'reserved'
         finally:
             worker_state.reserved_requests.clear()
+
+
+class test_DeadLetterControl:
+
+    def setup_method(self):
+        self.app.dead_letters.clear()
+        self.panel = self.create_panel(consumer=Consumer(self.app))
+
+        @self.app.task(name='c.unittest.mytask', shared=False)
+        def mytask():
+            pass
+        self.mytask = mytask
+
+    def teardown_method(self):
+        self.app.dead_letters.clear()
+
+    def create_state(self, **kwargs):
+        kwargs.setdefault('app', self.app)
+        kwargs.setdefault('hostname', hostname)
+        kwargs.setdefault('tset', set)
+        return AttributeDict(kwargs)
+
+    def create_panel(self, **kwargs):
+        return self.app.control.mailbox.Node(
+            hostname=hostname,
+            state=self.create_state(**kwargs),
+            handlers=control.Panel.data,
+        )
+
+    def make_entry(self, task_id=None, task_name='c.unittest.mytask',
+                   failed_at=None, **kwargs):
+        from celery.worker.deadletter import REASON_FAILURE
+        task_id = task_id or uuid()
+        entry = {
+            'id': uuid(),
+            'task_id': task_id,
+            'task_name': task_name,
+            'argsrepr': '(1, 2)',
+            'kwargsrepr': '{}',
+            'reason': REASON_FAILURE,
+            'exc_type': 'KeyError',
+            'exception': "KeyError('x')",
+            'traceback': 'Traceback...',
+            'retries': 3,
+            'failed_at': failed_at if failed_at is not None else time.time(),
+            'hostname': hostname,
+            'body': '[[1, 2], {}, {}]',
+            'content_type': 'application/json',
+            'content_encoding': 'utf-8',
+            'headers': {'id': task_id, 'task': task_name},
+            'properties': {'correlation_id': task_id},
+            'delivery_info': {'exchange': 'celery', 'routing_key': 'celery'},
+            'requeued_at': None,
+            'replay_id': None,
+        }
+        entry.update(kwargs)
+        return entry
+
+    def test_dead_letters_empty(self):
+        assert self.panel.handle('dead_letters') == []
+
+    def test_dead_letters_summary_omits_body_and_traceback(self):
+        entry = self.app.dead_letters.add(self.make_entry())
+        (listed,) = self.panel.handle('dead_letters')
+        assert listed['id'] == entry['id']
+        assert listed['task_id'] == entry['task_id']
+        assert 'body' not in listed
+        assert 'traceback' not in listed
+        assert listed['body_size'] == len(entry['body'])
+
+    def test_dead_letters_full(self):
+        entry = self.app.dead_letters.add(self.make_entry())
+        (listed,) = self.panel.handle('dead_letters', {'full': True})
+        assert listed['body'] == entry['body']
+        assert listed['traceback'] == entry['traceback']
+
+    def test_dead_letters_filters(self):
+        self.app.dead_letters.add(self.make_entry(
+            task_name='c.unittest.mytask', exc_type='KeyError',
+            failed_at=10.0))
+        self.app.dead_letters.add(self.make_entry(
+            task_name='c.unittest.other', exc_type='ValueError',
+            failed_at=20.0))
+        assert len(self.panel.handle('dead_letters')) == 2
+        (listed,) = self.panel.handle(
+            'dead_letters', {'task': 'c.unittest.mytask'})
+        assert listed['task_name'] == 'c.unittest.mytask'
+        (listed,) = self.panel.handle(
+            'dead_letters', {'exc_type': 'ValueError'})
+        assert listed['exc_type'] == 'ValueError'
+        assert len(self.panel.handle('dead_letters', {'since': 15.0})) == 1
+        assert len(self.panel.handle('dead_letters', {'until': 15.0})) == 1
+
+    def test_dead_letters_excludes_requeued_by_default(self):
+        entry = self.app.dead_letters.add(self.make_entry())
+        assert len(self.panel.handle('dead_letters')) == 1
+        self.app.dead_letters.mark_requeued(entry['id'])
+        assert self.panel.handle('dead_letters') == []
+        assert len(self.panel.handle(
+            'dead_letters', {'include_requeued': True})) == 1
+
+    def test_dead_letter_replay(self):
+        entry = self.app.dead_letters.add(self.make_entry())
+        producer = Mock(name='producer')
+        acquire = Mock(name='producer_or_acquire')
+        acquire.return_value.__enter__ = Mock(return_value=producer)
+        acquire.return_value.__exit__ = Mock(return_value=False)
+        with patch.object(type(self.app), 'producer_or_acquire', acquire):
+            ret = self.panel.handle('dead_letter_replay')
+        assert ret['total'] == 1
+        assert ret['replayed'][0]['id'] == entry['id']
+        producer.publish.assert_called_once()
+        # the same batch is not enqueued twice
+        with patch.object(type(self.app), 'producer_or_acquire', acquire):
+            ret = self.panel.handle('dead_letter_replay')
+        assert ret['replayed'] == []
+        assert len(ret['skipped']['requeued']) == 1
+        assert producer.publish.call_count == 1
+
+    def test_dead_letter_replay_skips_succeeded(self):
+        entry = self.app.dead_letters.add(self.make_entry())
+        self.app.backend.mark_as_done(entry['task_id'], 42)
+        producer = Mock(name='producer')
+        acquire = Mock(name='producer_or_acquire')
+        acquire.return_value.__enter__ = Mock(return_value=producer)
+        acquire.return_value.__exit__ = Mock(return_value=False)
+        with patch.object(type(self.app), 'producer_or_acquire', acquire):
+            ret = self.panel.handle('dead_letter_replay')
+        assert ret['replayed'] == []
+        assert len(ret['skipped']['succeeded']) == 1
+        producer.publish.assert_not_called()
+
+    def test_dead_letter_purge(self):
+        self.app.dead_letters.add(self.make_entry())
+        self.app.dead_letters.add(self.make_entry())
+        ret = self.panel.handle('dead_letter_purge')
+        assert '2' in ret['ok']
+        assert len(self.app.dead_letters) == 0
+
+    def test_dead_letter_purge_by_task(self):
+        self.app.dead_letters.add(self.make_entry(task_name='tasks.a'))
+        self.app.dead_letters.add(self.make_entry(task_name='tasks.b'))
+        ret = self.panel.handle('dead_letter_purge', {'task': 'tasks.a'})
+        assert '1' in ret['ok']
+        assert len(self.app.dead_letters) == 1

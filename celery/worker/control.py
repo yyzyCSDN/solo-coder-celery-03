@@ -442,6 +442,106 @@ def revoked(state, **kwargs):
     return list(worker_state.revoked)
 
 
+# -- Dead letters
+
+
+def _dead_letter_summary(entry):
+    summary = {key: value for key, value in entry.items()
+               if key not in ('body', 'traceback', 'properties')}
+    body = entry.get('body')
+    summary['body_size'] = len(body) if body is not None else 0
+    return summary
+
+
+@inspect_command(
+    args=[('task', str), ('exc_type', str), ('reason', str),
+          ('since', float), ('until', float), ('limit', int),
+          ('offset', int)],
+    signature='[task=name] [exc_type=name] [reason=reason] '
+              '[since=ts] [until=ts] [limit=n] [offset=n]',
+)
+def dead_letters(state, task=None, exc_type=None, reason=None,
+                 since=None, until=None, include_requeued=False,
+                 limit=None, offset=0, full=False, **kwargs):
+    """List finally failed tasks collected by the dead-letter store.
+
+    Keyword Arguments:
+        task (str): Only include entries of this task name.
+        exc_type (str): Only include entries with this exception type.
+        reason (str): Only include entries with this failure reason
+            (``failed``, ``rejected`` or ``timeout``).
+        since (float): Only include entries that failed at/after this time.
+        until (float): Only include entries that failed at/before this time.
+        include_requeued (bool): Also include entries already replayed.
+        limit (int): Maximum number of entries to return.
+        offset (int): Number of matching entries to skip.
+        full (bool): Also return the original message body and traceback.
+    """
+    entries = state.app.dead_letters.find(
+        task=task, exc_type=exc_type, reason=reason,
+        since=since, until=until, include_requeued=include_requeued,
+        limit=limit, offset=offset,
+    )
+    if not full:
+        entries = [_dead_letter_summary(entry) for entry in entries]
+    return entries
+
+
+@control_command(
+    variadic='ids',
+    signature='[id1 [id2 [... [idN]]]]',
+)
+def dead_letter_replay(state, ids=None, task=None, exc_type=None,
+                       since=None, until=None, limit=None, force=False,
+                       **kwargs):
+    """Re-enqueue dead-lettered tasks matching the given criteria.
+
+    The original message of every selected entry is republished with
+    its original task id.  Tasks that already succeeded, tasks with a
+    newer dead-letter entry, and entries already requeued by a previous
+    replay are skipped (unless ``force`` is enabled).
+
+    Keyword Arguments:
+        ids (str, list): Only replay the entries with these ids.
+        task (str): Only replay entries of this task name.
+        exc_type (str): Only replay entries with this exception type.
+        since (float): Only replay entries that failed at/after this time.
+        until (float): Only replay entries that failed at/before this time.
+        limit (int): Maximum number of entries to replay.
+        force (bool): Also replay entries already requeued before.
+    """
+    return state.app.dead_letters.replay(
+        ids=ids, task=task, exc_type=exc_type,
+        since=since, until=until, limit=limit, force=force,
+    )
+
+
+@control_command(
+    variadic='ids',
+    signature='[id1 [id2 [... [idN]]]]',
+)
+def dead_letter_purge(state, ids=None, task=None, exc_type=None,
+                      since=None, until=None, requeued_only=False,
+                      **kwargs):
+    """Remove dead-letter entries matching the given criteria.
+
+    With no arguments at all, every entry is removed.
+
+    Keyword Arguments:
+        ids (str, list): Only remove the entries with these ids.
+        task (str): Only remove entries of this task name.
+        exc_type (str): Only remove entries with this exception type.
+        since (float): Only remove entries that failed at/after this time.
+        until (float): Only remove entries that failed at/before this time.
+        requeued_only (bool): Only remove entries already replayed.
+    """
+    purged = state.app.dead_letters.purge(
+        ids=ids, task=task, exc_type=exc_type,
+        since=since, until=until, requeued_only=requeued_only,
+    )
+    return ok(f'{purged} dead-letter entries purged')
+
+
 @inspect_command(
     alias='dump_tasks',
     variadic='taskinfoitems',
